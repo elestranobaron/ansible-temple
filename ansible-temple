@@ -1,0 +1,460 @@
+#!/usr/bin/python3
+"""Select a service from an Ansible playbook catalogue and deploy it locally."""
+
+import argparse
+import curses
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+__version__ = "0.1.0"
+
+DEFAULT_REPO = "https://github.com/elestranobaron/wp-package-installator-playbooks"
+CACHE = Path.home() / ".cache" / "ansible-temple" / "catalog"
+CONFIG = Path.home() / ".config" / "ansible-temple" / "repository"
+
+
+class Fail(Exception):
+    """A condition the program can explain and stop on."""
+
+
+def option_key(option):
+    return option.get("key") or option.get("name") or option.get("id") or "option"
+
+
+def option_label(option):
+    return option.get("label") or option_key(option)
+
+
+def as_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "oui" if value else "non"
+    return str(value)
+
+
+def is_yes(value):
+    return value.strip().lower() in {"1", "true", "oui", "yes", "vrai"}
+
+
+def remember(url):
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG.write_text(url.strip() + "\n", encoding="utf-8")
+
+
+def remembered():
+    try:
+        return CONFIG.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def git(args, cwd=None):
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+    )
+
+
+def fetch(url):
+    """Clone or update the catalogue. Return the checkout directory."""
+    url = url.strip()
+    if not url:
+        raise Fail("adresse du dépôt vide")
+    if CACHE.exists() and not (CACHE / ".git").is_dir():
+        shutil.rmtree(CACHE)
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    if (CACHE / ".git").is_dir():
+        origin = git(["remote", "get-url", "origin"], CACHE)
+        if origin.returncode != 0 or origin.stdout.strip() != url:
+            shutil.rmtree(CACHE)
+        else:
+            pulled = git(["pull", "--ff-only"], CACHE)
+            if pulled.returncode != 0:
+                detail = (pulled.stderr or pulled.stdout).strip()
+                raise Fail(detail or "git pull a échoué")
+            return CACHE
+    cloned = git(["clone", "--depth", "1", url, str(CACHE)])
+    if cloned.returncode != 0:
+        detail = (cloned.stderr or cloned.stdout).strip()
+        raise Fail(detail or "git clone a échoué")
+    return CACHE
+
+
+def read_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise Fail(f"illisible: {path}: {exc.strerror}") from exc
+    except json.JSONDecodeError as exc:
+        raise Fail(f"JSON invalide: {path}: {exc}") from exc
+
+
+def service_infos(root):
+    base = root / "playbooks"
+    if not base.is_dir():
+        return []
+    found = []
+    for path in sorted(base.glob("*/info.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            data["_folder"] = path.parent.name
+            found.append(data)
+    return found
+
+
+def find_info(item, infos):
+    ident = item.get("id")
+    name = item.get("name")
+    for info in infos:
+        if ident and (info.get("id") == ident or info.get("_folder") == ident):
+            return info
+        if name and info.get("name") == name:
+            return info
+    return {}
+
+
+def load_catalog(root):
+    """Return the services whose playbook file is present."""
+    root = Path(root)
+    manifest = read_json(root / "manifest.json")
+    packages = manifest.get("packages")
+    if not isinstance(packages, list):
+        raise Fail("manifest.json ne contient pas de liste packages")
+    infos = service_infos(root)
+    catalog = []
+    for item in packages:
+        if not isinstance(item, dict):
+            continue
+        info = find_info(item, infos)
+        folder = info.get("_folder") or item.get("id") or "service"
+        playbook = item.get("playbook") or info.get("playbook") or f"playbooks/{folder}/main.yml"
+        if not (root / playbook).is_file():
+            continue
+        options = item.get("options")
+        if not isinstance(options, list):
+            options = info.get("options") if isinstance(info.get("options"), list) else []
+        catalog.append({
+            "id": item.get("id") or info.get("id") or folder,
+            "name": item.get("name") or info.get("name") or folder,
+            "category": item.get("category") or info.get("category") or "",
+            "description": item.get("description") or info.get("description") or "",
+            "playbook": playbook,
+            "options": [opt for opt in options if isinstance(opt, dict)],
+        })
+    if not catalog:
+        raise Fail("aucun playbook utilisable dans ce dépôt")
+    return catalog
+
+
+def clip(text, width):
+    text = str(text).replace("\n", " ")
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    if width == 1:
+        return "…"
+    return text[: width - 1] + "…"
+
+
+def write_at(window, y, x, text, attr=0):
+    height, width = window.getmaxyx()
+    if y < 0 or y >= height or x >= width:
+        return
+    window.addnstr(y, x, text, width - x - 1, attr)
+
+
+def row_text(service, width):
+    category = service["category"]
+    name = service["name"]
+    if not category or width < len(category) + 8:
+        return clip(name, width)
+    room = width - len(category) - 2
+    return clip(name, room).ljust(room) + "  " + category
+
+
+class Screen:
+    def __init__(self, window):
+        self.window = window
+        curses.curs_set(0)
+        self.window.keypad(True)
+        self.gold = curses.A_NORMAL
+        self.dim = curses.A_DIM
+        self.alert = curses.A_BOLD
+        if curses.has_colors():
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_WHITE, -1)
+            curses.init_pair(2, curses.COLOR_YELLOW, -1)
+            self.gold = curses.color_pair(2)
+            self.dim = curses.color_pair(1) | curses.A_DIM
+            self.alert = curses.color_pair(2) | curses.A_BOLD
+
+    def size(self):
+        return self.window.getmaxyx()
+
+    def line(self, y, x, text, attr=0):
+        write_at(self.window, y, x, text, attr)
+
+    def bar(self, y, text, attr):
+        _, width = self.size()
+        self.line(y, 0, clip(text, width - 1).ljust(width - 1), attr)
+
+    def key(self):
+        return self.window.get_wch()
+
+
+def ask_repository(screen, initial):
+    value = initial or DEFAULT_REPO
+    curses.curs_set(1)
+    try:
+        while True:
+            screen.window.erase()
+            height, width = screen.size()
+            screen.bar(0, " ansible-temple", screen.gold | curses.A_BOLD)
+            screen.line(2, 2, "Dépôt du catalogue", screen.gold)
+            screen.line(3, 2, "playbooks/<id>/info.json, main.yml, et manifest.json à la racine", screen.dim)
+            screen.bar(5, " " + value, curses.A_REVERSE)
+            screen.line(height - 1, 2, "Entrée continuer    Échap quitter", screen.dim)
+            screen.window.refresh()
+            key = screen.key()
+            if key in (27, curses.KEY_EXIT):
+                return None
+            if key in ("\n", "\r", curses.KEY_ENTER):
+                return value.strip()
+            if key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+                value = value[:-1]
+            elif isinstance(key, str) and key.isprintable():
+                value += key
+    finally:
+        curses.curs_set(0)
+
+
+def choose_service(screen, catalog, repository):
+    cursor = 0
+    offset = 0
+    while True:
+        screen.window.erase()
+        height, width = screen.size()
+        if height < 8 or width < 40:
+            screen.line(0, 0, "Terminal trop petit", screen.alert)
+            screen.window.refresh()
+            screen.key()
+            return None
+        screen.bar(0, f" ansible-temple    {len(catalog)} services", screen.gold | curses.A_BOLD)
+        screen.line(1, 2, clip(repository, width - 4), screen.dim)
+        top = 3
+        body = height - 5
+        if cursor < offset:
+            offset = cursor
+        if cursor >= offset + body:
+            offset = cursor - body + 1
+        for row in range(body):
+            index = offset + row
+            if index >= len(catalog):
+                break
+            text = row_text(catalog[index], width - 1)
+            attr = curses.A_REVERSE if index == cursor else screen.gold
+            screen.bar(top + row, text, attr)
+        current = catalog[cursor]
+        screen.line(height - 2, 2, clip(current["description"], width - 4), screen.dim)
+        screen.line(height - 1, 2, "↑↓ naviguer    Entrée ouvrir    q quitter", screen.dim)
+        screen.window.refresh()
+        key = screen.key()
+        if key in ("q", 27):
+            return None
+        if key in (curses.KEY_UP, "k"):
+            cursor = max(0, cursor - 1)
+        elif key in (curses.KEY_DOWN, "j"):
+            cursor = min(len(catalog) - 1, cursor + 1)
+        elif key in ("\n", "\r", curses.KEY_ENTER):
+            return current
+
+
+def edit_service(screen, service, repository):
+    options = service["options"]
+    values = [as_text(opt.get("default")) for opt in options]
+    cursor = 0
+    editing = False
+    buffer = ""
+    deploy_at = len(options)
+    while True:
+        screen.window.erase()
+        height, width = screen.size()
+        screen.bar(0, " ansible-temple", screen.gold | curses.A_BOLD)
+        screen.line(2, 2, service["name"], screen.gold | curses.A_BOLD)
+        screen.line(3, 2, clip(service["playbook"], width - 4), screen.dim)
+        screen.line(4, 2, clip(repository, width - 4), screen.dim)
+        top = 6
+        body = max(1, height - top - 1)
+        start = 0
+        if cursor >= body:
+            start = cursor - body + 1
+        for row in range(body):
+            index = start + row
+            if index < len(options):
+                shown = buffer if editing and index == cursor else values[index]
+                if (options[index].get("type") or "text") == "password":
+                    shown = "•" * len(shown)
+                if shown == "":
+                    shown = "—"
+                label = option_label(options[index])
+                text = f"{label}  {shown}"
+                attr = curses.A_REVERSE if index == cursor else screen.gold
+                screen.bar(top + row, " " + clip(text, width - 2), attr)
+            elif index == deploy_at:
+                attr = curses.A_REVERSE | screen.alert if index == cursor else screen.alert
+                screen.bar(top + row, " Déployer", attr)
+        screen.line(height - 1, 2, "Entrée modifier ou déployer    Échap retour", screen.dim)
+        screen.window.refresh()
+        key = screen.key()
+        if editing:
+            if key in ("\n", "\r", curses.KEY_ENTER):
+                values[cursor] = buffer
+                editing = False
+            elif key == 27:
+                editing = False
+            elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+                buffer = buffer[:-1]
+            elif isinstance(key, str) and key.isprintable():
+                buffer += key
+            continue
+        if key in (27, "q"):
+            return None
+        if key in (curses.KEY_UP, "k"):
+            cursor = max(0, cursor - 1)
+        elif key in (curses.KEY_DOWN, "j"):
+            cursor = min(deploy_at, cursor + 1)
+        elif key in ("\n", "\r", curses.KEY_ENTER, " "):
+            if cursor == deploy_at:
+                return encode(options, values)
+            kind = options[cursor].get("type") or "text"
+            if kind == "boolean":
+                values[cursor] = "non" if is_yes(values[cursor]) else "oui"
+            elif key == " ":
+                continue
+            else:
+                editing = True
+                buffer = values[cursor]
+
+
+def encode(options, values):
+    answers = {}
+    for option, value in zip(options, values):
+        kind = option.get("type") or "text"
+        if kind == "number" and value.strip():
+            try:
+                answers[option_key(option)] = int(value)
+                continue
+            except ValueError:
+                pass
+        if kind == "boolean":
+            answers[option_key(option)] = is_yes(value)
+        else:
+            answers[option_key(option)] = value
+    return answers
+
+
+def run_playbook(root, service, answers):
+    playbook = Path(root) / service["playbook"]
+    if shutil.which("ansible-playbook") is None:
+        raise Fail("ansible-playbook est absent. Installez le paquet ansible.")
+    payload = dict(answers)
+    payload["id"] = service["id"]
+    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    try:
+        json.dump(payload, handle, ensure_ascii=False)
+        handle.close()
+        os.chmod(handle.name, 0o600)
+        print(f"ansible-temple: {service['name']}")
+        print(f"dépôt:    {root}")
+        print(f"playbook: {playbook}")
+        print()
+        completed = subprocess.run(
+            ["ansible-playbook", str(playbook), "-e", f"@{handle.name}"],
+            cwd=root,
+        )
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+    return completed.returncode
+
+
+def interact(repository):
+    def draw(window):
+        screen = Screen(window)
+        chosen = repository
+        if not chosen:
+            chosen = ask_repository(screen, remembered() or DEFAULT_REPO)
+            if not chosen:
+                return None
+        window.erase()
+        screen.line(2, 2, "Lecture du dépôt", screen.gold)
+        window.refresh()
+        root = fetch(chosen)
+        remember(chosen)
+        catalog = load_catalog(root)
+        while True:
+            service = choose_service(screen, catalog, chosen)
+            if service is None:
+                return None
+            answers = edit_service(screen, service, chosen)
+            if answers is None:
+                continue
+            return root, service, answers
+
+    return curses.wrapper(draw)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="ansible-temple",
+        description="Choisir un service dans un catalogue de playbooks Ansible et le déployer sur cette machine.",
+    )
+    parser.add_argument("repository", nargs="?", help="URL du dépôt catalogue")
+    parser.add_argument("--version", action="version", version=f"ansible-temple {__version__}")
+    parser.add_argument("--check-catalog", metavar="RÉPERTOIRE", help=argparse.SUPPRESS)
+    return parser.parse_args(argv[1:])
+
+
+def main(argv):
+    args = parse_args(argv)
+    if args.check_catalog:
+        catalog = load_catalog(args.check_catalog)
+        for service in catalog:
+            print(f"{service['id']}\t{service['playbook']}")
+        return 0
+    try:
+        outcome = interact(args.repository)
+    except Fail as exc:
+        print(f"ansible-temple: {exc}", file=sys.stderr)
+        return 2
+    except curses.error:
+        print("ansible-temple: terminal inutilisable", file=sys.stderr)
+        return 2
+    if outcome is None:
+        return 0
+    root, service, answers = outcome
+    try:
+        return run_playbook(root, service, answers)
+    except Fail as exc:
+        print(f"ansible-temple: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

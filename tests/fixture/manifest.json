@@ -1,0 +1,28 @@
+{
+  "version": "1.0.0",
+  "packages": [
+    {
+      "id": "redis",
+      "name": "Redis Standalone",
+      "category": "Database",
+      "description": "Instance Redis simple.",
+      "playbook": "playbooks/redis/main.yml",
+      "options": [
+        { "key": "redis_port", "label": "Port", "type": "number", "default": 6379 }
+      ]
+    },
+    {
+      "name": "Freqtrade",
+      "description": "Bot de trading.",
+      "category": "Trading",
+      "options": [
+        { "id": "freqtrade_port", "type": "number", "label": "WebUI Port", "default": 8080 }
+      ]
+    },
+    {
+      "name": "Absent",
+      "description": "Playbook manquant, ignoré.",
+      "playbook": "playbooks/absent/main.yml"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+Tests: version
+Depends: ansible-temple
+Restrictions: superficial
+

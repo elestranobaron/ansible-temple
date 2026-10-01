@@ -1,0 +1,4 @@
+{
+  "name": "Freqtrade",
+  "playbook": "playbooks/freqtrade/main.yml"
+}

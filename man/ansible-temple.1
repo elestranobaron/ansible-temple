@@ -1,0 +1,63 @@
+.TH ANSIBLE\-TEMPLE 1 "October 2026" "ansible-temple 0.1.0" "User Commands"
+.SH NAME
+ansible\-temple \- choose a service from a playbook catalogue and deploy it locally
+.SH SYNOPSIS
+.B ansible\-temple
+.RI [ repository ]
+.SH DESCRIPTION
+.B ansible\-temple
+reads a Git repository that publishes an Ansible catalogue.
+The repository has
+.I manifest.json
+at its root and one directory per service under
+.IR playbooks/ ,
+each with
+.I info.json
+and
+.IR main.yml .
+.PP
+The program lists the services on the full width of the terminal.
+Opening a service shows the options declared in the catalogue, the
+repository address, and the playbook path.
+.B Deploy
+runs
+.BR ansible\-playbook (1)
+on this machine.
+.PP
+The reference catalogue is
+.UR https://github.com/elestranobaron/wp\-package\-installator\-playbooks
+.UE .
+Another repository is accepted when it follows the same layout.
+.SH OPTIONS
+.TP
+.I repository
+Clone or update this catalogue instead of asking for an address.
+.TP
+.B \-\-version
+Print the version and exit.
+.SH FILES
+.TP
+.I ~/.config/ansible\-temple/repository
+Last catalogue address.
+.TP
+.I ~/.cache/ansible\-temple/catalog
+Checkout of the catalogue.
+.SH KEYS
+.TP
+.B Up / Down
+Move.
+.TP
+.B Enter
+Open the selected service, edit a field, or deploy.
+.TP
+.B Escape / q
+Go back, or quit from the list.
+.SH EXIT STATUS
+0 when the program stops without a failed deploy; the exit status of
+.B ansible\-playbook
+when a deploy was started; 2 on usage or catalogue errors.
+.SH SEE ALSO
+.BR ansible\-playbook (1),
+.BR git (1)
+.SH AUTHOR
+Thomas Lloancy

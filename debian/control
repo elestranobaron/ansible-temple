@@ -1,0 +1,32 @@
+Source: ansible-temple
+Section: admin
+Priority: optional
+Maintainer: Thomas Lloancy <tlloancy@deter-mi.net>
+Build-Depends:
+ debhelper-compat (= 13),
+ python3,
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+Homepage: https://github.com/elestranobaron/ansible-temple
+Vcs-Git: https://github.com/elestranobaron/ansible-temple.git
+Vcs-Browser: https://github.com/elestranobaron/ansible-temple
+
+Package: ansible-temple
+Architecture: all
+Depends:
+ ${misc:Depends},
+ python3,
+ git,
+ ansible,
+Suggests:
+ docker.io,
+ docker-compose-plugin,
+Description: deploy a service from an Ansible playbook catalogue
+ ansible-temple reads a Git repository laid out as a playbook catalogue:
+ manifest.json at the root, and playbooks/<id>/info.json plus main.yml
+ for each service. It lists those services in the terminal and runs
+ ansible-playbook locally for the one you choose.
+ .
+ The reference catalogue deploys stacks such as MariaDB, Redis, and
+ WordPress. Any other repository with the same layout can be used.
+ The repository address is shown before the playbook runs.

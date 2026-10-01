@@ -1,0 +1,5 @@
+{
+  "id": "redis",
+  "name": "Redis Standalone",
+  "playbook": "playbooks/redis/main.yml"
+}
