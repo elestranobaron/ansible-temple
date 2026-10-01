@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 DEFAULT_REPO = "https://github.com/elestranobaron/wp-package-installator-playbooks"
 CACHE = Path.home() / ".cache" / "ansible-temple" / "catalog"
@@ -35,7 +35,7 @@ def as_text(value):
     if value is None:
         return ""
     if isinstance(value, bool):
-        return "oui" if value else "non"
+        return "yes" if value else "no"
     return str(value)
 
 
@@ -68,7 +68,7 @@ def fetch(url):
     """Clone or update the catalogue. Return the checkout directory."""
     url = url.strip()
     if not url:
-        raise Fail("adresse du dépôt vide")
+        raise Fail("empty repository address")
     if CACHE.exists() and not (CACHE / ".git").is_dir():
         shutil.rmtree(CACHE)
     CACHE.parent.mkdir(parents=True, exist_ok=True)
@@ -80,12 +80,12 @@ def fetch(url):
             pulled = git(["pull", "--ff-only"], CACHE)
             if pulled.returncode != 0:
                 detail = (pulled.stderr or pulled.stdout).strip()
-                raise Fail(detail or "git pull a échoué")
+                raise Fail(detail or "git pull failed")
             return CACHE
     cloned = git(["clone", "--depth", "1", url, str(CACHE)])
     if cloned.returncode != 0:
         detail = (cloned.stderr or cloned.stdout).strip()
-        raise Fail(detail or "git clone a échoué")
+        raise Fail(detail or "git clone failed")
     return CACHE
 
 
@@ -93,9 +93,9 @@ def read_json(path):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise Fail(f"illisible: {path}: {exc.strerror}") from exc
+        raise Fail(f"unreadable: {path}: {exc.strerror}") from exc
     except json.JSONDecodeError as exc:
-        raise Fail(f"JSON invalide: {path}: {exc}") from exc
+        raise Fail(f"invalid JSON: {path}: {exc}") from exc
 
 
 def service_infos(root):
@@ -131,7 +131,7 @@ def load_catalog(root):
     manifest = read_json(root / "manifest.json")
     packages = manifest.get("packages")
     if not isinstance(packages, list):
-        raise Fail("manifest.json ne contient pas de liste packages")
+        raise Fail("manifest.json has no packages list")
     infos = service_infos(root)
     catalog = []
     for item in packages:
@@ -154,7 +154,7 @@ def load_catalog(root):
             "options": [opt for opt in options if isinstance(opt, dict)],
         })
     if not catalog:
-        raise Fail("aucun playbook utilisable dans ce dépôt")
+        raise Fail("no usable playbook in this repository")
     return catalog
 
 
@@ -224,10 +224,10 @@ def ask_repository(screen, initial):
             screen.window.erase()
             height, width = screen.size()
             screen.bar(0, " ansible-temple", screen.gold | curses.A_BOLD)
-            screen.line(2, 2, "Dépôt du catalogue", screen.gold)
-            screen.line(3, 2, "playbooks/<id>/info.json, main.yml, et manifest.json à la racine", screen.dim)
+            screen.line(2, 2, "Catalogue repository", screen.gold)
+            screen.line(3, 2, "playbooks/<id>/info.json, main.yml, and manifest.json at the root", screen.dim)
             screen.bar(5, " " + value, curses.A_REVERSE)
-            screen.line(height - 1, 2, "Entrée continuer    Échap quitter", screen.dim)
+            screen.line(height - 1, 2, "Enter continue    Esc quit", screen.dim)
             screen.window.refresh()
             key = screen.key()
             if key in (27, curses.KEY_EXIT):
@@ -249,7 +249,7 @@ def choose_service(screen, catalog, repository):
         screen.window.erase()
         height, width = screen.size()
         if height < 8 or width < 40:
-            screen.line(0, 0, "Terminal trop petit", screen.alert)
+            screen.line(0, 0, "Terminal too small", screen.alert)
             screen.window.refresh()
             screen.key()
             return None
@@ -270,7 +270,7 @@ def choose_service(screen, catalog, repository):
             screen.bar(top + row, text, attr)
         current = catalog[cursor]
         screen.line(height - 2, 2, clip(current["description"], width - 4), screen.dim)
-        screen.line(height - 1, 2, "↑↓ naviguer    Entrée ouvrir    q quitter", screen.dim)
+        screen.line(height - 1, 2, "Up Down move    Enter open    q quit", screen.dim)
         screen.window.refresh()
         key = screen.key()
         if key in ("q", 27):
@@ -316,8 +316,8 @@ def edit_service(screen, service, repository):
                 screen.bar(top + row, " " + clip(text, width - 2), attr)
             elif index == deploy_at:
                 attr = curses.A_REVERSE | screen.alert if index == cursor else screen.alert
-                screen.bar(top + row, " Déployer", attr)
-        screen.line(height - 1, 2, "Entrée modifier ou déployer    Échap retour", screen.dim)
+                screen.bar(top + row, " Deploy", attr)
+        screen.line(height - 1, 2, "Enter edit or deploy    Esc back", screen.dim)
         screen.window.refresh()
         key = screen.key()
         if editing:
@@ -342,7 +342,7 @@ def edit_service(screen, service, repository):
                 return encode(options, values)
             kind = options[cursor].get("type") or "text"
             if kind == "boolean":
-                values[cursor] = "non" if is_yes(values[cursor]) else "oui"
+                values[cursor] = "no" if is_yes(values[cursor]) else "yes"
             elif key == " ":
                 continue
             else:
@@ -370,7 +370,7 @@ def encode(options, values):
 def run_playbook(root, service, answers):
     playbook = Path(root) / service["playbook"]
     if shutil.which("ansible-playbook") is None:
-        raise Fail("ansible-playbook est absent. Installez le paquet ansible.")
+        raise Fail("ansible-playbook is missing. Install the ansible package.")
     payload = dict(answers)
     payload["id"] = service["id"]
     handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
@@ -379,7 +379,7 @@ def run_playbook(root, service, answers):
         handle.close()
         os.chmod(handle.name, 0o600)
         print(f"ansible-temple: {service['name']}")
-        print(f"dépôt:    {root}")
+        print(f"repository: {root}")
         print(f"playbook: {playbook}")
         print()
         completed = subprocess.run(
@@ -403,7 +403,7 @@ def interact(repository):
             if not chosen:
                 return None
         window.erase()
-        screen.line(2, 2, "Lecture du dépôt", screen.gold)
+        screen.line(2, 2, "Reading the repository", screen.gold)
         window.refresh()
         root = fetch(chosen)
         remember(chosen)
@@ -423,11 +423,11 @@ def interact(repository):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="ansible-temple",
-        description="Choisir un service dans un catalogue de playbooks Ansible et le déployer sur cette machine.",
+        description="Choose a service from an Ansible playbook catalogue and deploy it on this machine.",
     )
-    parser.add_argument("repository", nargs="?", help="URL du dépôt catalogue")
+    parser.add_argument("repository", nargs="?", help="catalogue repository URL")
     parser.add_argument("--version", action="version", version=f"ansible-temple {__version__}")
-    parser.add_argument("--check-catalog", metavar="RÉPERTOIRE", help=argparse.SUPPRESS)
+    parser.add_argument("--check-catalog", metavar="DIRECTORY", help=argparse.SUPPRESS)
     return parser.parse_args(argv[1:])
 
 
@@ -444,7 +444,7 @@ def main(argv):
         print(f"ansible-temple: {exc}", file=sys.stderr)
         return 2
     except curses.error:
-        print("ansible-temple: terminal inutilisable", file=sys.stderr)
+        print("ansible-temple: unusable terminal", file=sys.stderr)
         return 2
     if outcome is None:
         return 0

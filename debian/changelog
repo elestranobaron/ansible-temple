@@ -1,3 +1,9 @@
+ansible-temple (0.1.1-1) unstable; urgency=medium
+
+  * Write the interface and the README in English.
+
+ -- Thomas Lloancy <tlloancy@deter-mi.net>  Thu, 01 Oct 2026 15:14:05 +0200
+
 ansible-temple (0.1.0-1) unstable; urgency=medium
 
   * Initial release. (Closes: #1149577)
