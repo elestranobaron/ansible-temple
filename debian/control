@@ -21,7 +21,7 @@ Depends:
 Suggests:
  docker.io,
  docker-compose-plugin,
-Description: deploy a service from an Ansible playbook catalogue
+Description: deploy a service one shot from an Ansible playbook catalogue
  ansible-temple reads a Git repository laid out as a playbook catalogue:
  manifest.json at the root, and playbooks/<id>/info.json plus main.yml
  for each service. It lists those services in the terminal and runs
